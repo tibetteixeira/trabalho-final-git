@@ -542,6 +542,42 @@ def web_exportar_vendas():
     )
 
 
+def valor_json(valor):
+    """Valor monetário como texto com 2 casas (ex.: "1234.50"), como em venda_para_json."""
+    return f"{valor:.2f}"
+
+
+@app.get("/api/web/dashboard")
+@exigir_autenticacao_web("dashboard")
+def web_dashboard():
+    try:
+        indicadores = db.indicadores_dashboard_web(g.request_id)
+    except psycopg.Error:
+        return resposta_falha_no_banco("dashboard")
+    resumo = indicadores["resumo"]
+    registrar_log("INFO", "web", "dashboard", "success", f"Indicadores enviados ({resumo['total_vendas']} vendas)")
+    return (
+        jsonify(
+            resumo={
+                "total_vendas": resumo["total_vendas"],
+                "faturamento_total": valor_json(resumo["faturamento_total"]),
+            },
+            faturamento_por_mes=[
+                {"mes": linha["mes"], "total": valor_json(linha["total"])} for linha in indicadores["faturamento_por_mes"]
+            ],
+            faturamento_por_categoria=[
+                {"categoria": linha["categoria"], "total": valor_json(linha["total"])}
+                for linha in indicadores["faturamento_por_categoria"]
+            ],
+            top_produtos=[
+                {"produto_id": linha["produto_id"], "produto_nome": linha["produto_nome"], "quantidade": linha["quantidade"]}
+                for linha in indicadores["top_produtos"]
+            ],
+        ),
+        200,
+    )
+
+
 @app.delete("/api/web/records/<id_venda>")
 @exigir_autenticacao_web("excluir_venda")
 def web_excluir_venda(id_venda):

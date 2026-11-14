@@ -345,3 +345,72 @@ def excluir_venda_web(id_venda, request_id):
         return False
     registrar_log("INFO", "web", "excluir_venda", "success", request_id, f"Venda {id_venda} excluída")
     return True
+
+
+# Indicadores do dashboard da Web (#6). Consultas próprias, lidas no mesmo snapshot.
+MESES_DASHBOARD = 12
+TOP_PRODUTOS_DASHBOARD = 5
+
+
+def indicadores_dashboard_web(request_id):
+    """Retorna os 3 indicadores do dashboard da Web e um resumo, todos do mesmo snapshot.
+
+    - faturamento_por_mes: soma de valor_total por mês, dos últimos MESES_DASHBOARD meses com vendas;
+    - faturamento_por_categoria: soma de valor_total por categoria do catálogo (categoria sem venda = 0);
+    - top_produtos: os TOP_PRODUTOS_DASHBOARD produtos com mais unidades vendidas.
+    """
+    try:
+        with obter_conexao() as conexao:
+            # REPEATABLE READ: os três gráficos e o resumo veem as mesmas vendas.
+            conexao.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+            resumo = conexao.execute(
+                "SELECT COUNT(*) AS total_vendas, COALESCE(SUM(valor_total), 0) AS faturamento_total FROM venda"
+            ).fetchone()
+            por_mes = conexao.execute(
+                """
+                SELECT mes, total FROM (
+                    SELECT to_char(date_trunc('month', data_venda), 'YYYY-MM') AS mes, SUM(valor_total) AS total
+                    FROM venda
+                    GROUP BY 1
+                    ORDER BY 1 DESC
+                    LIMIT %s
+                ) AS ultimos
+                ORDER BY mes
+                """,
+                (MESES_DASHBOARD,),
+            ).fetchall()
+            por_categoria = conexao.execute(
+                """
+                SELECT produto.categoria, COALESCE(SUM(venda.valor_total), 0) AS total
+                FROM produto LEFT JOIN venda ON venda.produto_id = produto.id
+                GROUP BY produto.categoria
+                ORDER BY total DESC, produto.categoria
+                """
+            ).fetchall()
+            top_produtos = conexao.execute(
+                """
+                SELECT produto.id AS produto_id, produto.nome AS produto_nome, SUM(venda.quantidade) AS quantidade
+                FROM venda JOIN produto ON produto.id = venda.produto_id
+                GROUP BY produto.id, produto.nome
+                ORDER BY quantidade DESC, produto.nome
+                LIMIT %s
+                """,
+                (TOP_PRODUTOS_DASHBOARD,),
+            ).fetchall()
+    except psycopg.Error:
+        registrar_log("ERROR", "web", "dashboard", "error", request_id, "Falha ao calcular os indicadores")
+        raise
+    registrar_log(
+        "INFO",
+        "web",
+        "dashboard",
+        "success",
+        request_id,
+        f"Indicadores calculados sobre {resumo['total_vendas']} vendas",
+    )
+    return {
+        "resumo": resumo,
+        "faturamento_por_mes": por_mes,
+        "faturamento_por_categoria": por_categoria,
+        "top_produtos": top_produtos,
+    }

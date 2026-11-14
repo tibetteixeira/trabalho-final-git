@@ -13,9 +13,10 @@ O mesmo CRUD é acessado por **Web** (`index.html`) e **CLI** (`cli.py`), cada u
 | Backend / API | Python 3.12 + Flask | Simples, cliente de testes embutido |
 | Banco | PostgreSQL 16 + psycopg 3 | Serviço próprio no Compose ("Web, API e banco") |
 | Frontend | HTML + CSS + JS puro em um único `index.html` | Exigência da avaliação |
+| CLI | Python 3.12 em um único `cli.py`, só biblioteca padrão (`argparse`, `urllib`); serviço `cli` no Compose | Sem dependência nova; roda via `docker compose run` |
 | Servidor Web | nginx servindo `index.html` e fazendo proxy de `/api/` | Mesma origem, sem CORS |
 | Autenticação Web | Usuário inicial via env; senha com hash scrypt; token assinado (itsdangerous), 8 h | Sem senha em texto puro |
-| Autenticação CLI | `POST /api/cli/token` + Bearer (issue #7) | **[EM ABERTO]** mecanismo do token CLI |
+| Autenticação CLI | `POST /api/cli/token` com o mesmo usuário da Web; token assinado (itsdangerous, salt próprio), 8 h, enviado como Bearer e lido de `TOKEN_CLI` (issue #7) | Mesmo mecanismo da Web; o salt próprio separa os tokens dos dois clientes |
 | Logs | JSON por linha no stdout, camadas `api` e `db`, `request_id` compartilhado | Seção 3.3 da avaliação |
 | Testes | pytest + pytest-cov, 100% de linhas em `api.py`, `db.py` (e `cli.py` a partir da #7) | Seção 4 da avaliação |
 

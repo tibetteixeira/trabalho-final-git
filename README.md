@@ -10,6 +10,7 @@ Especificação do projeto: [`docs/especificacao.md`](docs/especificacao.md).
 | Camada | Tecnologia | Arquivo |
 |---|---|---|
 | Web | HTML + CSS + JavaScript puro, servido por nginx | `index.html` |
+| CLI | Python 3.12, só biblioteca padrão (`argparse`, `urllib`) | `cli.py` |
 | API | Python 3.12 + Flask | `api.py` |
 | Banco | PostgreSQL 16 (driver psycopg 3) | `db.py` |
 | Testes | pytest + pytest-cov | `tests/` |
@@ -382,6 +383,69 @@ Cada carregamento registra uma linha na camada `api` e outra na camada `db`, com
 docker compose logs api | grep '"operation": "dashboard"'
 ```
 
+## #7 — Estrutura CLI: ajuda, subcomandos, healthcheck e token
+
+A CLI é o arquivo único `cli.py`. Ela **não acessa o banco**: toda operação passa pelas rotas `/api/cli/*` da mesma API usada pela Web. Roda no serviço `cli` do Docker Compose (perfil `cli`), com a mesma imagem da API, então nada precisa ser instalado no host. Os comandos abaixo sobem `db` e `api` automaticamente, se ainda não estiverem rodando.
+
+### Executar e listar comandos
+
+```bash
+docker compose run --rm cli              # sem argumentos: mostra a ajuda
+docker compose run --rm cli --help       # ajuda geral, com a lista de subcomandos
+docker compose run --rm cli login --help # ajuda de um subcomando
+```
+
+| Subcomando | Rota | Autenticação | O que faz |
+|---|---|---|---|
+| `saude` | `GET /api/cli/health` | pública | Verifica se a API está no ar |
+| `login [--usuario U]` | `POST /api/cli/token` | usuário e senha | Obtém um token de acesso |
+| `sessao` | `GET /api/cli/sessao` | Bearer (`TOKEN_CLI`) | Mostra o usuário dono do token |
+
+Códigos de saída: `0` sucesso, `1` erro da API ou API fora do ar, `2` uso incorreto (subcomando ou opção inválidos), `3` não autenticado (sem token, token inválido/expirado ou credenciais inválidas).
+
+### Obter o token e configurar a variável de ambiente
+
+1. Peça o token com o usuário da Web (`ADMIN_USUARIO` / `ADMIN_SENHA`). A senha é digitada sem eco:
+
+   ```bash
+   docker compose run --rm cli login --usuario admin
+   ```
+
+   Só o token é impresso no stdout; as instruções vão para o stderr. Ele é assinado com `CHAVE_SECRETA` e **expira em 8 horas**.
+
+2. Exporte o token na variável `TOKEN_CLI` do seu terminal. O `docker-compose.yml` repassa essa variável ao serviço `cli`:
+
+   ```bash
+   export TOKEN_CLI='<token impresso pelo login>'
+   docker compose run --rm cli sessao   # Autenticado como Administrador (admin)
+   ```
+
+   Ou, num passo só (sem TTY, a senha vem de `SENHA_CLI`):
+
+   ```bash
+   export TOKEN_CLI=$(docker compose run --rm -T -e SENHA_CLI=admin123 cli login --usuario admin)
+   ```
+
+Os comandos protegidos enviam `Authorization: Bearer <TOKEN_CLI>`. Sem `TOKEN_CLI`, a CLI avisa e nem chama a API; com token inválido ou expirado, a API responde **HTTP 401** e a CLI pede um novo `login`. O token da CLI usa um salt próprio: token da Web não vale na CLI, e vice-versa.
+
+Para usar a CLI contra outra API, defina `URL_API` (padrão `http://api:8000`, o serviço do Compose).
+
+### Endpoints desta issue
+
+| Método | Rota | Autenticação | Resposta |
+|---|---|---|---|
+| GET | `/api/cli/health` | pública | `200 {"status":"ok"}` |
+| POST | `/api/cli/token` | — | `200 {"token","usuario","nome"}`; `400` sem usuário ou senha; `401` credenciais inválidas; `500` falha no banco |
+| GET | `/api/cli/sessao` | Bearer | `200 {"usuario","nome"}`; `401` sem token, token inválido ou expirado |
+
+### Logs
+
+Os eventos usam `client: "cli"`. A emissão de token registra `operation: "token"` na camada `api` e a consulta do usuário (`consultar_usuario`) na camada `db`, com o mesmo `request_id`. Credenciais inválidas (`token`) e token ausente, inválido ou expirado (`sessao`) geram `WARN` com `status: "error"`. **Senha e token nunca são registrados.**
+
+```bash
+docker compose logs api | grep '"client": "cli"'
+```
+
 ## Logs
 
 Cada evento é uma linha JSON no stdout, com `timestamp`, `level`, `layer` (`api`/`db`), `client` (`web`/`cli`), `operation`, `status`, `request_id` e `message`. API e banco compartilham o mesmo `request_id` dentro de uma requisição (também devolvido no header `X-Request-ID`). A inicialização do banco usa `client: "sistema"` e `request_id: "inicializacao"`. Erros não previstos na API viram `500 {"erro": "Erro interno"}` com log `ERROR`.
@@ -397,4 +461,4 @@ docker compose logs api | grep '"request_id": "req-…"'  # correlacionar uma op
 docker compose --profile testes run --rm --build testes
 ```
 
-Sobe um PostgreSQL descartável (`db-testes`, em memória) e roda o pytest exigindo **100% de cobertura de linhas** em `api.py` e `db.py` (`--cov-fail-under=100`). Para limpar: `docker compose --profile testes down`.
+Sobe um PostgreSQL descartável (`db-testes`, em memória) e roda o pytest exigindo **100% de cobertura de linhas** em `api.py`, `db.py` e `cli.py` (`--cov-fail-under=100`). Os testes da CLI sobem a API num servidor HTTP local e executam os subcomandos de verdade contra ela. Para limpar: `docker compose --profile testes down`.

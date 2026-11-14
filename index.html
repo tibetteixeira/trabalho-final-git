@@ -77,6 +77,31 @@
     .cabecalho-cartao { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; justify-content: space-between; }
     .cabecalho-cartao h2 { margin: 0; }
     .acoes-cabecalho { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    /* Dashboard (#6): gráficos em HTML/CSS, sem biblioteca externa. */
+    .acoes-cabecalho.alinhadas { align-items: center; }
+    .resumo-dashboard { display: flex; flex-wrap: wrap; gap: 2rem; margin: 1rem 0 0.5rem; }
+    .resumo-dashboard div { display: flex; flex-direction: column; }
+    .resumo-dashboard span { font-size: 0.85rem; color: var(--suave); }
+    .resumo-dashboard strong { font-size: 1.4rem; }
+    .graficos { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 1.5rem; margin-top: 1rem; }
+    .grafico { margin: 0; padding: 1rem; border: 1px solid var(--borda); border-radius: 6px; min-width: 0; }
+    .grafico figcaption { font-weight: 600; margin-bottom: 0.15rem; }
+    .grafico .legenda { font-size: 0.8rem; color: var(--suave); margin: 0 0 0.75rem; }
+    .grafico .vazio { color: var(--suave); font-size: 0.9rem; padding: 1.5rem 0; text-align: center; }
+    .colunas { display: flex; align-items: flex-end; gap: 0.4rem; height: 190px; }
+    .coluna { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+    .coluna .valor { font-size: 0.7rem; color: var(--suave); white-space: nowrap; margin-bottom: 0.2rem; }
+    .coluna .barra { width: 100%; max-width: 3rem; background: var(--primaria); border-radius: 3px 3px 0 0; min-height: 2px; }
+    .coluna .rotulo { font-size: 0.75rem; color: var(--suave); margin-top: 0.3rem; text-align: center; line-height: 1.15; }
+    .coluna .rotulo small { display: block; font-size: 0.65rem; }
+    .barras { display: flex; flex-direction: column; gap: 0.6rem; }
+    /* Nome e valor numa linha, barra embaixo ocupando toda a largura do gráfico. */
+    .linha-barra { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "rotulo valor" "trilho trilho"; gap: 0.2rem 0.6rem; font-size: 0.85rem; }
+    .linha-barra .rotulo { grid-area: rotulo; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .linha-barra .valor { grid-area: valor; }
+    .linha-barra .trilho { grid-area: trilho; min-width: 0; background: var(--fundo); border-radius: 3px; }
+    .linha-barra .barra { height: 0.6rem; background: var(--primaria); border-radius: 3px; min-width: 2px; }
+    .linha-barra .valor { color: var(--suave); white-space: nowrap; font-size: 0.8rem; text-align: right; }
     .carregar-venda { display: flex; gap: 0.5rem; align-items: flex-end; }
     .carregar-venda label { margin-top: 0; }
     .carregar-venda input { width: 7rem; }
@@ -148,7 +173,38 @@
       <div class="cartao">
         <h2 style="margin-top:0">Página inicial</h2>
         <p>Bem-vindo(a), <strong id="nome-boas-vindas"></strong>.</p>
-        <p class="situacao">Exportação e dashboard serão adicionados nas próximas issues.</p>
+      </div>
+
+      <div class="cartao" id="cartao-dashboard">
+        <div class="cabecalho-cartao">
+          <h2>Dashboard</h2>
+          <div class="acoes-cabecalho alinhadas">
+            <span id="atualizado-dashboard" class="situacao" role="status"></span>
+            <button type="button" id="atualizar-dashboard" class="secundario">Atualizar</button>
+          </div>
+        </div>
+        <div class="resumo-dashboard">
+          <div><span>Vendas registradas</span><strong id="total-vendas-dashboard">—</strong></div>
+          <div><span>Faturamento total</span><strong id="faturamento-dashboard">—</strong></div>
+        </div>
+        <div class="graficos">
+          <figure class="grafico">
+            <figcaption>Faturamento por mês</figcaption>
+            <p class="legenda">Soma do valor total das vendas, últimos 12 meses com vendas</p>
+            <div id="grafico-mes" class="colunas"></div>
+          </figure>
+          <figure class="grafico">
+            <figcaption>Faturamento por categoria</figcaption>
+            <p class="legenda">Soma do valor total das vendas de cada categoria</p>
+            <div id="grafico-categoria" class="barras"></div>
+          </figure>
+          <figure class="grafico">
+            <figcaption>Top 5 produtos</figcaption>
+            <p class="legenda">Produtos com mais unidades vendidas</p>
+            <div id="grafico-produtos" class="barras"></div>
+          </figure>
+        </div>
+        <div id="erro-dashboard" class="erro" role="alert"></div>
       </div>
 
       <div class="cartao" id="cartao-venda">
@@ -511,6 +567,7 @@
           $("sucesso-venda").textContent = `Venda nº ${dados.id} cadastrada: ${resumo}.`;
         }
         carregarListagem();
+        carregarDashboard();
       } catch (erro) {
         if (!(erro instanceof NaoAutenticado)) $("erro-venda").textContent = "Não foi possível conectar à API.";
       } finally {
@@ -856,6 +913,7 @@
           .map(([id, r]) => `nº ${id} (${r.reason instanceof TypeError ? "sem conexão com a API" : r.reason.message})`);
         for (const id of excluidas) selecionadas.delete(id);
         if (excluidas.includes(idEmEdicao)) prepararNovaVenda();
+        if (excluidas.length) carregarDashboard();
         await carregarListagem();
         // Mensagens depois da recarga, que limpa a área de erro; um erro da própria recarga é mantido.
         if (excluidas.length)
@@ -873,6 +931,131 @@
         atualizarSelecao();
       }
     });
+
+    // --- Dashboard com 3 gráficos (#6) ---------------------------------------------------------------
+
+    const MESES_ABREVIADOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+    let ultimaRequisicaoDashboard = 0;
+
+    function rotuloMes(anoMes) {
+      const [ano, mes] = anoMes.split("-");
+      return `${MESES_ABREVIADOS[Number(mes) - 1]}/${ano.slice(2)}`;
+    }
+
+    // Proporção da barra em relação ao maior valor do gráfico (0 a 100%).
+    function proporcao(valor, maximo) {
+      return maximo > 0 ? `${(valor / maximo) * 100}%` : "0%";
+    }
+
+    function elemento(tag, classe, texto) {
+      const el = document.createElement(tag);
+      if (classe) el.className = classe;
+      if (texto !== undefined) el.textContent = texto;
+      return el;
+    }
+
+    function mensagemVazia(conteiner, texto) {
+      conteiner.replaceChildren(elemento("div", "vazio", texto));
+    }
+
+    // Colunas verticais: `itens` = [{ rotulo, valor (número), texto (valor formatado) }].
+    function desenharColunas(conteiner, itens) {
+      if (!itens.length) return mensagemVazia(conteiner, "Sem vendas registradas.");
+      const maximo = Math.max(...itens.map((item) => item.valor));
+      conteiner.replaceChildren(
+        ...itens.map((item) => {
+          const coluna = elemento("div", "coluna");
+          coluna.title = `${item.rotuloCompleto}: ${item.texto}`;
+          const barra = elemento("div", "barra");
+          barra.style.height = proporcao(item.valor, maximo);
+          // Rótulo em duas linhas (mês e ano), para caber até 12 colunas lado a lado.
+          const rotulo = elemento("span", "rotulo", item.rotulo);
+          rotulo.append(elemento("small", null, item.ano));
+          coluna.append(elemento("span", "valor", item.textoCurto), barra, rotulo);
+          return coluna;
+        }),
+      );
+    }
+
+    // Barras horizontais: `itens` = [{ rotulo, valor (número), texto (valor formatado) }].
+    function desenharBarras(conteiner, itens, textoVazio) {
+      if (!itens.length) return mensagemVazia(conteiner, textoVazio);
+      const maximo = Math.max(...itens.map((item) => item.valor));
+      conteiner.replaceChildren(
+        ...itens.map((item) => {
+          const linha = elemento("div", "linha-barra");
+          const rotulo = elemento("span", "rotulo", item.rotulo);
+          rotulo.title = item.rotulo;
+          const trilho = elemento("div", "trilho");
+          const barra = elemento("div", "barra");
+          barra.style.width = proporcao(item.valor, maximo);
+          trilho.append(barra);
+          linha.append(rotulo, trilho, elemento("span", "valor", item.texto));
+          return linha;
+        }),
+      );
+    }
+
+    const moedaCurta = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", notation: "compact" });
+
+    function desenharDashboard(dados) {
+      $("total-vendas-dashboard").textContent = dados.resumo.total_vendas.toLocaleString("pt-BR");
+      $("faturamento-dashboard").textContent = moeda.format(dados.resumo.faturamento_total);
+      desenharColunas(
+        $("grafico-mes"),
+        dados.faturamento_por_mes.map((item) => ({
+          rotulo: MESES_ABREVIADOS[Number(item.mes.slice(5)) - 1],
+          ano: item.mes.slice(0, 4),
+          rotuloCompleto: rotuloMes(item.mes),
+          valor: Number(item.total),
+          texto: moeda.format(item.total),
+          textoCurto: moedaCurta.format(item.total),
+        })),
+      );
+      desenharBarras(
+        $("grafico-categoria"),
+        dados.faturamento_por_categoria.map((item) => ({
+          rotulo: item.categoria,
+          valor: Number(item.total),
+          texto: moeda.format(item.total),
+        })),
+        "Nenhuma categoria cadastrada.",
+      );
+      desenharBarras(
+        $("grafico-produtos"),
+        dados.top_produtos.map((item) => ({
+          rotulo: item.produto_nome,
+          valor: item.quantidade,
+          texto: `${item.quantidade.toLocaleString("pt-BR")} ${item.quantidade === 1 ? "unidade" : "unidades"}`,
+        })),
+        "Sem vendas registradas.",
+      );
+    }
+
+    // Recarrega os indicadores do banco. Chamado ao abrir a página, no botão Atualizar e depois de
+    // cadastrar, editar ou excluir vendas. Respostas antigas são descartadas, como na listagem.
+    async function carregarDashboard() {
+      const numero = ++ultimaRequisicaoDashboard;
+      $("erro-dashboard").textContent = "";
+      $("atualizar-dashboard").disabled = true;
+      try {
+        const { resposta, dados } = await chamarApi("/api/web/dashboard");
+        if (numero !== ultimaRequisicaoDashboard) return;
+        if (!resposta.ok) {
+          $("erro-dashboard").textContent = dados.erro || "Não foi possível carregar os indicadores.";
+          return;
+        }
+        desenharDashboard(dados);
+        $("atualizado-dashboard").textContent = `Atualizado às ${new Date().toLocaleTimeString("pt-BR")}`;
+      } catch (erro) {
+        if (numero === ultimaRequisicaoDashboard && !(erro instanceof NaoAutenticado))
+          $("erro-dashboard").textContent = "Não foi possível conectar à API.";
+      } finally {
+        if (numero === ultimaRequisicaoDashboard) $("atualizar-dashboard").disabled = false;
+      }
+    }
+
+    $("atualizar-dashboard").addEventListener("click", carregarDashboard);
 
     function mostrarLogin() {
       sessionStorage.removeItem(CHAVE_TOKEN);
@@ -898,6 +1081,7 @@
       $("formulario-busca").reset();
       limparErrosBusca();
       carregarListagem({ pagina: 1, filtros: {} });
+      carregarDashboard();
     }
 
     async function restaurarSessao() {

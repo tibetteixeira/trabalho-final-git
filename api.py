@@ -1,4 +1,4 @@
-"""API REST (Flask) consumida pela Web e, futuramente, pela CLI."""
+"""API REST (Flask) consumida pela Web (`/api/web/*`) e pela CLI (`/api/cli/*`)."""
 
 import csv
 import io
@@ -19,6 +19,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import db
 
 VALIDADE_TOKEN_WEB = 8 * 60 * 60  # 8 horas
+VALIDADE_TOKEN_CLI = 8 * 60 * 60  # 8 horas
 
 # Limites da venda: mantêm quantidade * valor_unitario dentro de NUMERIC(12, 2) e os ids dentro de INTEGER.
 # QUANTIDADE_MAXIMA e VALOR_UNITARIO_MAXIMO: manter iguais aos de index.html.
@@ -51,6 +52,11 @@ def serializador_web():
     return URLSafeTimedSerializer(os.environ["CHAVE_SECRETA"], salt="sessao-web")
 
 
+def serializador_cli():
+    """Assina os tokens da CLI. O salt diferente impede usar o token da Web na CLI e vice-versa."""
+    return URLSafeTimedSerializer(os.environ["CHAVE_SECRETA"], salt="token-cli")
+
+
 @app.before_request
 def atribuir_request_id():
     g.request_id = f"req-{uuid.uuid4().hex[:12]}"
@@ -62,20 +68,20 @@ def expor_request_id(resposta):
     return resposta
 
 
-def exigir_autenticacao_web(operacao):
-    """Exige `Authorization: Bearer <token>` válido emitido por /api/web/login."""
+def _exigir_token(origem, serializador, validade, operacao):
+    """Exige `Authorization: Bearer <token>` válido. O token nunca vai para o log."""
 
     def decorador(rota):
         @wraps(rota)
         def envoltorio(*args, **kwargs):
             cabecalho = request.headers.get("Authorization", "")
             if not cabecalho.startswith("Bearer "):
-                registrar_log("WARN", "web", operacao, "error", "Requisição sem token")
+                registrar_log("WARN", origem, operacao, "error", "Requisição sem token")
                 return jsonify(erro="Não autenticado"), 401
             try:
-                conteudo = serializador_web().loads(cabecalho[7:], max_age=VALIDADE_TOKEN_WEB)
+                conteudo = serializador().loads(cabecalho[7:], max_age=validade)
             except BadSignature:
-                registrar_log("WARN", "web", operacao, "error", "Token inválido ou expirado")
+                registrar_log("WARN", origem, operacao, "error", "Token inválido ou expirado")
                 return jsonify(erro="Não autenticado"), 401
             g.usuario = conteudo["usuario"]
             g.nome = conteudo["nome"]
@@ -86,12 +92,27 @@ def exigir_autenticacao_web(operacao):
     return decorador
 
 
+def exigir_autenticacao_web(operacao):
+    """Exige `Authorization: Bearer <token>` válido emitido por /api/web/login."""
+    return _exigir_token("web", serializador_web, VALIDADE_TOKEN_WEB, operacao)
+
+
+def exigir_autenticacao_cli(operacao):
+    """Exige `Authorization: Bearer <token>` válido emitido por /api/cli/token."""
+    return _exigir_token("cli", serializador_cli, VALIDADE_TOKEN_CLI, operacao)
+
+
+def origem_da_requisicao():
+    """`cli` para as rotas /api/cli/*, `web` para as demais."""
+    return "cli" if request.path.startswith("/api/cli/") else "web"
+
+
 @app.errorhandler(Exception)
 def tratar_erro_inesperado(erro):
     """Responde erros não previstos com JSON e log, em vez da página HTML padrão."""
     if isinstance(erro, HTTPException):
         return erro
-    registrar_log("ERROR", "web", request.endpoint or "desconhecida", "error", "Erro inesperado na API")
+    registrar_log("ERROR", origem_da_requisicao(), request.endpoint or "desconhecida", "error", "Erro inesperado na API")
     return jsonify(erro="Erro interno"), 500
 
 
@@ -101,37 +122,63 @@ def web_saude():
     return jsonify(status="ok"), 200
 
 
-@app.post("/api/web/login")
-def web_login():
+def emitir_token(origem, operacao, serializador, mensagem_sucesso):
+    """Confere usuário e senha do corpo JSON e responde com um token assinado por `serializador`.
+
+    Compartilhado pelo login da Web e pela emissão de token da CLI. Senha e token não vão para o log.
+    """
     dados = request.get_json(silent=True)
     if not isinstance(dados, dict):
         dados = {}
     usuario = dados.get("usuario")
     senha = dados.get("senha")
     if not isinstance(usuario, str) or not isinstance(senha, str) or not usuario or not senha:
-        registrar_log("WARN", "web", "login", "error", "Usuário e senha são obrigatórios")
+        registrar_log("WARN", origem, operacao, "error", "Usuário e senha são obrigatórios")
         return jsonify(erro="Usuário e senha são obrigatórios"), 400
 
     try:
-        registro = db.buscar_usuario(usuario, g.request_id, "web")
+        registro = db.buscar_usuario(usuario, g.request_id, origem)
     except psycopg.Error:
-        registrar_log("ERROR", "web", "login", "error", "Falha ao acessar o banco")
+        registrar_log("ERROR", origem, operacao, "error", "Falha ao acessar o banco")
         return jsonify(erro="Erro interno"), 500
 
     senha_valida = check_password_hash(registro["senha_hash"] if registro else HASH_FICTICIO, senha)
     if registro is None or not senha_valida:
-        registrar_log("WARN", "web", "login", "error", "Credenciais inválidas")
+        registrar_log("WARN", origem, operacao, "error", "Credenciais inválidas")
         return jsonify(erro="Usuário ou senha inválidos"), 401
 
-    token = serializador_web().dumps({"usuario": registro["usuario"], "nome": registro["nome"]})
-    registrar_log("INFO", "web", "login", "success", "Login realizado")
+    token = serializador().dumps({"usuario": registro["usuario"], "nome": registro["nome"]})
+    registrar_log("INFO", origem, operacao, "success", mensagem_sucesso)
     return jsonify(token=token, usuario=registro["usuario"], nome=registro["nome"]), 200
+
+
+@app.post("/api/web/login")
+def web_login():
+    return emitir_token("web", "login", serializador_web, "Login realizado")
 
 
 @app.get("/api/web/sessao")
 @exigir_autenticacao_web("sessao")
 def web_sessao():
     registrar_log("INFO", "web", "sessao", "success", "Sessão válida")
+    return jsonify(usuario=g.usuario, nome=g.nome), 200
+
+
+@app.get("/api/cli/health")
+def cli_saude():
+    registrar_log("INFO", "cli", "health", "success", "Healthcheck OK")
+    return jsonify(status="ok"), 200
+
+
+@app.post("/api/cli/token")
+def cli_token():
+    return emitir_token("cli", "token", serializador_cli, "Token da CLI emitido")
+
+
+@app.get("/api/cli/sessao")
+@exigir_autenticacao_cli("sessao")
+def cli_sessao():
+    registrar_log("INFO", "cli", "sessao", "success", "Token da CLI válido")
     return jsonify(usuario=g.usuario, nome=g.nome), 200
 
 

@@ -91,17 +91,24 @@
     .colunas { display: flex; align-items: flex-end; gap: 0.4rem; height: 190px; }
     .coluna { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
     .coluna .valor { font-size: 0.7rem; color: var(--suave); white-space: nowrap; margin-bottom: 0.2rem; }
-    .coluna .barra { width: 100%; max-width: 3rem; background: var(--primaria); border-radius: 3px 3px 0 0; min-height: 2px; }
+    /* A barra tem uma área só dela: a altura em % é sempre proporcional ao maior valor. */
+    .coluna .area-barra { flex: 1; min-height: 0; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+    .coluna .barra { width: 100%; max-width: 3rem; background: var(--primaria); border-radius: 3px 3px 0 0; }
     .coluna .rotulo { font-size: 0.75rem; color: var(--suave); margin-top: 0.3rem; text-align: center; line-height: 1.15; }
-    .coluna .rotulo small { display: block; font-size: 0.65rem; }
-    .barras { display: flex; flex-direction: column; gap: 0.6rem; }
+    .coluna .rotulo small { display: block; font-size: 0.65rem; min-height: 0.8em; }
+    /* Muitas colunas: o valor sai da coluna (fica no tooltip e para leitores de tela) e o rótulo encolhe. */
+    .colunas.compacto { gap: 0.2rem; }
+    .colunas.compacto .rotulo { font-size: 0.58rem; }
+    .colunas.compacto .rotulo small { font-size: 0.55rem; }
     /* Nome e valor numa linha, barra embaixo ocupando toda a largura do gráfico. */
     .linha-barra { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "rotulo valor" "trilho trilho"; gap: 0.2rem 0.6rem; font-size: 0.85rem; }
     .linha-barra .rotulo { grid-area: rotulo; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .linha-barra .valor { grid-area: valor; }
+    .linha-barra .valor { grid-area: valor; color: var(--suave); white-space: nowrap; font-size: 0.8rem; text-align: right; }
     .linha-barra .trilho { grid-area: trilho; min-width: 0; background: var(--fundo); border-radius: 3px; }
-    .linha-barra .barra { height: 0.6rem; background: var(--primaria); border-radius: 3px; min-width: 2px; }
-    .linha-barra .valor { color: var(--suave); white-space: nowrap; font-size: 0.8rem; text-align: right; }
+    .linha-barra .barra { height: 0.6rem; background: var(--primaria); border-radius: 3px; }
+    /* Só valores acima de zero ganham tamanho mínimo: zero não desenha barra. */
+    .coluna .barra.positiva { min-height: 2px; }
+    .linha-barra .barra.positiva { min-width: 2px; }
     .carregar-venda { display: flex; gap: 0.5rem; align-items: flex-end; }
     .carregar-venda label { margin-top: 0; }
     .carregar-venda input { width: 7rem; }
@@ -184,13 +191,13 @@
           </div>
         </div>
         <div class="resumo-dashboard">
-          <div><span>Vendas registradas</span><strong id="total-vendas-dashboard">—</strong></div>
-          <div><span>Faturamento total</span><strong id="faturamento-dashboard">—</strong></div>
+          <div><span>Vendas registradas (todo o período)</span><strong id="total-vendas-dashboard">—</strong></div>
+          <div><span>Faturamento total (todo o período)</span><strong id="faturamento-dashboard">—</strong></div>
         </div>
         <div class="graficos">
           <figure class="grafico">
             <figcaption>Faturamento por mês</figcaption>
-            <p class="legenda">Soma do valor total das vendas, últimos 12 meses com vendas</p>
+            <p class="legenda">Soma do valor total das vendas nos últimos 12 meses; mês sem venda aparece zerado</p>
             <div id="grafico-mes" class="colunas"></div>
           </figure>
           <figure class="grafico">
@@ -566,8 +573,7 @@
           prepararNovaVenda();
           $("sucesso-venda").textContent = `Venda nº ${dados.id} cadastrada: ${resumo}.`;
         }
-        carregarListagem();
-        carregarDashboard();
+        recarregarDados();
       } catch (erro) {
         if (!(erro instanceof NaoAutenticado)) $("erro-venda").textContent = "Não foi possível conectar à API.";
       } finally {
@@ -913,8 +919,7 @@
           .map(([id, r]) => `nº ${id} (${r.reason instanceof TypeError ? "sem conexão com a API" : r.reason.message})`);
         for (const id of excluidas) selecionadas.delete(id);
         if (excluidas.includes(idEmEdicao)) prepararNovaVenda();
-        if (excluidas.length) carregarDashboard();
-        await carregarListagem();
+        await (excluidas.length ? recarregarDados() : carregarListagem());
         // Mensagens depois da recarga, que limpa a área de erro; um erro da própria recarga é mantido.
         if (excluidas.length)
           $("sucesso-listagem").textContent =
@@ -935,11 +940,14 @@
     // --- Dashboard com 3 gráficos (#6) ---------------------------------------------------------------
 
     const MESES_ABREVIADOS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+    // Acima disso as colunas ficam estreitas demais para mostrar o valor em cima de cada uma.
+    const MAXIMO_COLUNAS_COM_VALOR = 6;
     let ultimaRequisicaoDashboard = 0;
 
-    function rotuloMes(anoMes) {
+    // "2026-10" -> { mes: "out", ano: "2026" }
+    function partesMes(anoMes) {
       const [ano, mes] = anoMes.split("-");
-      return `${MESES_ABREVIADOS[Number(mes) - 1]}/${ano.slice(2)}`;
+      return { mes: MESES_ABREVIADOS[Number(mes) - 1], ano };
     }
 
     // Proporção da barra em relação ao maior valor do gráfico (0 a 100%).
@@ -954,30 +962,43 @@
       return el;
     }
 
+    function barraProporcional(valor, maximo, propriedade) {
+      const barra = elemento("div", valor > 0 ? "barra positiva" : "barra");
+      barra.style[propriedade] = proporcao(valor, maximo);
+      return barra;
+    }
+
     function mensagemVazia(conteiner, texto) {
+      conteiner.classList.remove("compacto");
       conteiner.replaceChildren(elemento("div", "vazio", texto));
     }
 
-    // Colunas verticais: `itens` = [{ rotulo, valor (número), texto (valor formatado) }].
-    function desenharColunas(conteiner, itens) {
-      if (!itens.length) return mensagemVazia(conteiner, "Sem vendas registradas.");
+    // Colunas verticais. `itens` = [{ mes, ano, valor (número), texto (valor por extenso), textoCurto }].
+    function desenharColunas(conteiner, itens, textoVazio) {
+      if (!itens.some((item) => item.valor > 0)) return mensagemVazia(conteiner, textoVazio);
       const maximo = Math.max(...itens.map((item) => item.valor));
+      const compacto = itens.length > MAXIMO_COLUNAS_COM_VALOR;
+      conteiner.classList.toggle("compacto", compacto);
       conteiner.replaceChildren(
-        ...itens.map((item) => {
+        ...itens.map((item, indice) => {
           const coluna = elemento("div", "coluna");
-          coluna.title = `${item.rotuloCompleto}: ${item.texto}`;
-          const barra = elemento("div", "barra");
-          barra.style.height = proporcao(item.valor, maximo);
-          // Rótulo em duas linhas (mês e ano), para caber até 12 colunas lado a lado.
-          const rotulo = elemento("span", "rotulo", item.rotulo);
-          rotulo.append(elemento("small", null, item.ano));
-          coluna.append(elemento("span", "valor", item.textoCurto), barra, rotulo);
+          coluna.title = `${item.mes}/${item.ano}: ${item.texto}`;
+          // No modo compacto o valor continua no DOM, escondido só visualmente.
+          const valor = elemento("span", compacto ? "valor visualmente-oculto" : "valor", compacto ? item.texto : item.textoCurto);
+          // O ano aparece na primeira coluna e quando ele muda (janeiro), como em gráficos de calendário.
+          const mostrarAno = indice === 0 || item.mes === MESES_ABREVIADOS[0];
+          const rotulo = elemento("span", "rotulo", item.mes);
+          const ano = compacto ? `’${item.ano.slice(2)}` : item.ano;
+          rotulo.append(elemento("small", null, mostrarAno ? ano : ""));
+          const area = elemento("div", "area-barra");
+          area.append(barraProporcional(item.valor, maximo, "height"));
+          coluna.append(valor, area, rotulo);
           return coluna;
         }),
       );
     }
 
-    // Barras horizontais: `itens` = [{ rotulo, valor (número), texto (valor formatado) }].
+    // Barras horizontais. `itens` = [{ rotulo, valor (número), texto (valor formatado) }].
     function desenharBarras(conteiner, itens, textoVazio) {
       if (!itens.length) return mensagemVazia(conteiner, textoVazio);
       const maximo = Math.max(...itens.map((item) => item.valor));
@@ -987,10 +1008,8 @@
           const rotulo = elemento("span", "rotulo", item.rotulo);
           rotulo.title = item.rotulo;
           const trilho = elemento("div", "trilho");
-          const barra = elemento("div", "barra");
-          barra.style.width = proporcao(item.valor, maximo);
-          trilho.append(barra);
-          linha.append(rotulo, trilho, elemento("span", "valor", item.texto));
+          trilho.append(barraProporcional(item.valor, maximo, "width"));
+          linha.append(rotulo, elemento("span", "valor", item.texto), trilho);
           return linha;
         }),
       );
@@ -1004,13 +1023,12 @@
       desenharColunas(
         $("grafico-mes"),
         dados.faturamento_por_mes.map((item) => ({
-          rotulo: MESES_ABREVIADOS[Number(item.mes.slice(5)) - 1],
-          ano: item.mes.slice(0, 4),
-          rotuloCompleto: rotuloMes(item.mes),
+          ...partesMes(item.mes),
           valor: Number(item.total),
           texto: moeda.format(item.total),
           textoCurto: moedaCurta.format(item.total),
         })),
+        "Sem vendas nos últimos 12 meses.",
       );
       desenharBarras(
         $("grafico-categoria"),
@@ -1032,32 +1050,65 @@
       );
     }
 
+    // Tira da tela os números da carga anterior, para nunca parecerem atuais ao lado de um erro
+    // (e para não aparecerem para outra pessoa depois de sair e entrar de novo).
+    function limparDashboard() {
+      $("total-vendas-dashboard").textContent = "—";
+      $("faturamento-dashboard").textContent = "—";
+      $("atualizado-dashboard").textContent = "";
+      for (const id of ["grafico-mes", "grafico-categoria", "grafico-produtos"]) {
+        $(id).classList.remove("compacto");
+        $(id).replaceChildren();
+      }
+    }
+
     // Recarrega os indicadores do banco. Chamado ao abrir a página, no botão Atualizar e depois de
     // cadastrar, editar ou excluir vendas. Respostas antigas são descartadas, como na listagem.
     async function carregarDashboard() {
       const numero = ++ultimaRequisicaoDashboard;
       $("erro-dashboard").textContent = "";
       $("atualizar-dashboard").disabled = true;
+      let resposta, dados;
       try {
-        const { resposta, dados } = await chamarApi("/api/web/dashboard");
-        if (numero !== ultimaRequisicaoDashboard) return;
-        if (!resposta.ok) {
-          $("erro-dashboard").textContent = dados.erro || "Não foi possível carregar os indicadores.";
-          return;
+        ({ resposta, dados } = await chamarApi("/api/web/dashboard"));
+      } catch (erro) {
+        if (numero === ultimaRequisicaoDashboard) {
+          $("atualizar-dashboard").disabled = false;
+          if (!(erro instanceof NaoAutenticado)) {
+            limparDashboard();
+            $("erro-dashboard").textContent = "Não foi possível conectar à API.";
+          }
         }
+        return;
+      }
+      if (numero !== ultimaRequisicaoDashboard) return;
+      $("atualizar-dashboard").disabled = false;
+      if (!resposta.ok) {
+        limparDashboard();
+        $("erro-dashboard").textContent = dados.erro || "Não foi possível carregar os indicadores.";
+        return;
+      }
+      // Erro ao desenhar é problema da tela, não da conexão: mensagem própria.
+      try {
         desenharDashboard(dados);
         $("atualizado-dashboard").textContent = `Atualizado às ${new Date().toLocaleTimeString("pt-BR")}`;
       } catch (erro) {
-        if (numero === ultimaRequisicaoDashboard && !(erro instanceof NaoAutenticado))
-          $("erro-dashboard").textContent = "Não foi possível conectar à API.";
-      } finally {
-        if (numero === ultimaRequisicaoDashboard) $("atualizar-dashboard").disabled = false;
+        limparDashboard();
+        $("erro-dashboard").textContent = "Não foi possível exibir os indicadores recebidos.";
+        console.error("Falha ao desenhar o dashboard", erro);
       }
     }
 
     $("atualizar-dashboard").addEventListener("click", carregarDashboard);
 
+    // Depois de qualquer alteração de vendas: a tabela e o dashboard precisam refletir o banco.
+    function recarregarDados() {
+      carregarDashboard();
+      return carregarListagem();
+    }
+
     function mostrarLogin() {
+      limparDashboard();
       sessionStorage.removeItem(CHAVE_TOKEN);
       $("tela-inicial").classList.add("oculto");
       $("info-usuario").classList.add("oculto");

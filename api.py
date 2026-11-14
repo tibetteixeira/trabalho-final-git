@@ -212,6 +212,11 @@ def validar_venda(dados):
     return venda, erros
 
 
+def valor_json(valor):
+    """Valor monetário como texto com 2 casas (ex.: "1234.50"). Regra única da API para valores em reais."""
+    return f"{valor:.2f}"
+
+
 def venda_para_json(linha):
     return {
         "id": linha["id"],
@@ -219,8 +224,8 @@ def venda_para_json(linha):
         "produto_nome": linha["produto_nome"],
         "categoria": linha["categoria"],
         "quantidade": linha["quantidade"],
-        "valor_unitario": str(linha["valor_unitario"]),
-        "valor_total": str(linha["valor_total"]),
+        "valor_unitario": valor_json(linha["valor_unitario"]),
+        "valor_total": valor_json(linha["valor_total"]),
         "data_venda": linha["data_venda"].isoformat(),
     }
 
@@ -489,7 +494,7 @@ CABECALHO_CSV = ("Nº", "Data", "Produto", "Categoria", "Quantidade", "Valor uni
 
 def valor_csv(valor):
     """Decimal com 2 casas e vírgula decimal, sem separador de milhar (ex.: 1234,50)."""
-    return f"{valor:.2f}".replace(".", ",")
+    return valor_json(valor).replace(".", ",")
 
 
 def gerar_csv(linhas):
@@ -542,16 +547,12 @@ def web_exportar_vendas():
     )
 
 
-def valor_json(valor):
-    """Valor monetário como texto com 2 casas (ex.: "1234.50"), como em venda_para_json."""
-    return f"{valor:.2f}"
-
-
 @app.get("/api/web/dashboard")
 @exigir_autenticacao_web("dashboard")
 def web_dashboard():
     try:
-        indicadores = db.indicadores_dashboard_web(g.request_id)
+        # O gráfico de meses termina no mês de hoje, no mesmo fuso usado na validação das vendas.
+        indicadores = db.indicadores_dashboard_web(hoje(), g.request_id)
     except psycopg.Error:
         return resposta_falha_no_banco("dashboard")
     resumo = indicadores["resumo"]

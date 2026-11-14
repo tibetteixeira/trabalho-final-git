@@ -352,32 +352,37 @@ MESES_DASHBOARD = 12
 TOP_PRODUTOS_DASHBOARD = 5
 
 
-def indicadores_dashboard_web(request_id):
+def indicadores_dashboard_web(data_referencia, request_id):
     """Retorna os 3 indicadores do dashboard da Web e um resumo, todos do mesmo snapshot.
 
-    - faturamento_por_mes: soma de valor_total por mês, dos últimos MESES_DASHBOARD meses com vendas;
+    - resumo: total de vendas e faturamento de todo o período;
+    - faturamento_por_mes: soma de valor_total em cada um dos MESES_DASHBOARD meses de calendário
+      que terminam no mês de `data_referencia` (mês sem venda = 0, para o eixo do tempo não enganar);
     - faturamento_por_categoria: soma de valor_total por categoria do catálogo (categoria sem venda = 0);
     - top_produtos: os TOP_PRODUTOS_DASHBOARD produtos com mais unidades vendidas.
     """
     try:
         with obter_conexao() as conexao:
             # REPEATABLE READ: os três gráficos e o resumo veem as mesmas vendas.
+            # Somente leitura: impede que uma escrita entre aqui por engano.
             conexao.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+            conexao.read_only = True
             resumo = conexao.execute(
                 "SELECT COUNT(*) AS total_vendas, COALESCE(SUM(valor_total), 0) AS faturamento_total FROM venda"
             ).fetchone()
             por_mes = conexao.execute(
                 """
-                SELECT mes, total FROM (
-                    SELECT to_char(date_trunc('month', data_venda), 'YYYY-MM') AS mes, SUM(valor_total) AS total
-                    FROM venda
-                    GROUP BY 1
-                    ORDER BY 1 DESC
-                    LIMIT %s
-                ) AS ultimos
-                ORDER BY mes
+                SELECT to_char(meses.mes, 'YYYY-MM') AS mes, COALESCE(SUM(venda.valor_total), 0) AS total
+                FROM generate_series(
+                    date_trunc('month', %(referencia)s::timestamp) - make_interval(months => %(meses)s - 1),
+                    date_trunc('month', %(referencia)s::timestamp),
+                    interval '1 month'
+                ) AS meses(mes)
+                LEFT JOIN venda ON date_trunc('month', venda.data_venda::timestamp) = meses.mes
+                GROUP BY meses.mes
+                ORDER BY meses.mes
                 """,
-                (MESES_DASHBOARD,),
+                {"referencia": data_referencia, "meses": MESES_DASHBOARD},
             ).fetchall()
             por_categoria = conexao.execute(
                 """

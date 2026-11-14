@@ -318,19 +318,19 @@ Cada exportação registra uma linha na camada `api` e outra na camada `db`, com
 
 ### Usar pela Web
 
-Depois do login, o cartão **Dashboard** aparece logo abaixo das boas-vindas, com o total de vendas registradas, o faturamento total e os 3 gráficos. Os valores vêm do banco pela API sempre que a página é aberta ou recarregada, ao clicar em **Atualizar** e automaticamente depois de cadastrar, editar ou excluir uma venda. O horário da última atualização aparece ao lado do botão.
+Depois do login, o cartão **Dashboard** aparece logo abaixo das boas-vindas, com o total de vendas registradas e o faturamento total (ambos de **todo o período**) e os 3 gráficos. Os valores vêm do banco pela API sempre que a página é aberta ou recarregada, ao clicar em **Atualizar** e automaticamente depois de cadastrar, editar ou excluir uma venda. O horário da última atualização aparece ao lado do botão.
 
-Os gráficos são desenhados em HTML e CSS dentro do `index.html`, sem biblioteca externa. Passe o mouse sobre uma coluna do gráfico de meses para ver o valor exato.
+Os gráficos são desenhados em HTML e CSS dentro do `index.html`, sem biblioteca externa. Com até 6 colunas, o valor aparece em cima de cada uma; com mais (o normal, com 12 meses), ele sai da coluna para não sobrepor as vizinhas: passe o mouse sobre a coluna para ver o valor exato (leitores de tela leem o valor de todas). Valor zero não desenha barra. Se a API falhar, os números anteriores saem da tela junto com a mensagem de erro, para não parecerem atuais.
 
 ### Os 3 indicadores
 
 | Indicador | O que mede | Como é calculado |
 |---|---|---|
-| **Faturamento por mês** (colunas) | Quanto foi vendido, em reais, em cada mês | Soma de `venda.valor_total` agrupada pelo mês de `data_venda` (`date_trunc('month', ...)`). Mostra os **últimos 12 meses que têm vendas**, do mais antigo para o mais recente. Meses sem venda não aparecem |
+| **Faturamento por mês** (colunas) | Quanto foi vendido, em reais, em cada mês | Soma de `venda.valor_total` agrupada pelo mês de `data_venda` (`date_trunc('month', ...)`). Mostra sempre os **12 meses de calendário até o mês atual** (gerados com `generate_series`), do mais antigo para o mais recente; **mês sem venda aparece com R$ 0,00**, para o eixo do tempo não pular meses. O "mês atual" usa o mesmo fuso da validação das vendas (`FUSO_HORARIO`) |
 | **Faturamento por categoria** (barras) | Quanto cada categoria do catálogo representa nas vendas | Soma de `venda.valor_total` por `produto.categoria`, partindo da tabela `produto` com `LEFT JOIN` em `venda`: categorias sem venda aparecem com R$ 0,00. Ordenado do maior para o menor faturamento |
 | **Top 5 produtos** (barras) | Os produtos mais vendidos em volume | Soma de `venda.quantidade` por produto, ordenada da maior para a menor; empate desempatado pelo nome. Mostra no máximo 5 produtos; produtos sem venda não entram |
 
-O resumo acima dos gráficos traz `COUNT(*)` e `SUM(valor_total)` de todas as vendas. Todas as consultas rodam na mesma transação (`REPEATABLE READ`), então o resumo e os 3 gráficos sempre se referem às mesmas vendas, mesmo se outra sessão alterar dados no meio. As consultas são próprias do dashboard Web (`indicadores_dashboard_web` no `db.py`).
+O resumo acima dos gráficos traz `COUNT(*)` e `SUM(valor_total)` de **todas** as vendas, por isso o rótulo diz "todo o período": com histórico maior que 12 meses, ele é maior que a soma das colunas do gráfico de meses. Todas as consultas rodam na mesma transação, `REPEATABLE READ` e somente leitura, então o resumo e os 3 gráficos sempre se referem às mesmas vendas, mesmo se outra sessão alterar dados no meio. As consultas são próprias do dashboard Web (`indicadores_dashboard_web` no `db.py`).
 
 ### Endpoint desta issue
 
@@ -340,18 +340,37 @@ Exige `Authorization: Bearer <token>`; sem token ou com token inválido responde
 |---|---|---|
 | GET | `/api/web/dashboard` | `200` com `resumo`, `faturamento_por_mes`, `faturamento_por_categoria` e `top_produtos` |
 
-Valores em reais vêm como texto com 2 casas (`"1234.50"`), como no restante da API. Exemplo:
+Valores em reais vêm como texto com 2 casas (`"1234.50"`), com a mesma regra (`valor_json`) usada em `/records` e no CSV.
 
 ```bash
 curl -s http://localhost:8080/api/web/dashboard -H "Authorization: Bearer $TOKEN"
 ```
 
+Exemplo com 6 vendas de agosto a outubro de 2026, consultado em outubro (os meses de nov/2025 a jul/2026 vêm com `"0.00"` e foram omitidos aqui):
+
 ```json
 {
   "resumo": {"total_vendas": 6, "faturamento_total": "198.49"},
-  "faturamento_por_mes": [{"mes": "2026-09", "total": "100.00"}, {"mes": "2026-10", "total": "42.69"}],
-  "faturamento_por_categoria": [{"categoria": "Alimentos", "total": "140.80"}, {"categoria": "Bebidas", "total": "29.70"}],
-  "top_produtos": [{"produto_id": 2, "produto_nome": "Feijão 1 kg", "quantidade": 10}]
+  "faturamento_por_mes": [
+    {"mes": "2025-11", "total": "0.00"},
+    "…",
+    {"mes": "2026-08", "total": "55.80"},
+    {"mes": "2026-09", "total": "100.00"},
+    {"mes": "2026-10", "total": "42.69"}
+  ],
+  "faturamento_por_categoria": [
+    {"categoria": "Alimentos", "total": "140.80"},
+    {"categoria": "Bebidas", "total": "29.70"},
+    {"categoria": "Higiene", "total": "25.00"},
+    {"categoria": "Limpeza", "total": "2.99"}
+  ],
+  "top_produtos": [
+    {"produto_id": 2, "produto_nome": "Feijão 1 kg", "quantidade": 10},
+    {"produto_id": 10, "produto_nome": "Sabonete", "quantidade": 10},
+    {"produto_id": 4, "produto_nome": "Refrigerante 2 L", "quantidade": 3},
+    {"produto_id": 1, "produto_nome": "Arroz 5 kg", "quantidade": 2},
+    {"produto_id": 7, "produto_nome": "Detergente 500 ml", "quantidade": 1}
+  ]
 }
 ```
 

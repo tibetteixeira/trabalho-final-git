@@ -1,11 +1,15 @@
 """Testes do dashboard da Web (issue #6): indicadores na API e no banco."""
 
 import json
+from datetime import date
 
 import psycopg
 import pytest
 
+import api
 import db
+
+HOJE = date(2026, 10, 31)
 
 
 def _eventos(capsys):
@@ -27,6 +31,18 @@ def _inserir_venda(produto, quantidade, valor_unitario, data_venda):
             "INSERT INTO venda (produto_id, quantidade, valor_unitario, data_venda) VALUES (%s, %s, %s, %s)",
             (_id_produto(produto), quantidade, valor_unitario, data_venda),
         )
+
+
+@pytest.fixture(autouse=True)
+def hoje_fixo(monkeypatch):
+    """A janela de 12 meses termina no mês de hoje: fixa a data para os testes não dependerem do relógio."""
+    monkeypatch.setattr(api, "hoje", lambda: HOJE)
+
+
+def _meses_esperados(com_valor):
+    """Os 12 meses de nov/2025 a out/2026, com zero onde `com_valor` não tem o mês."""
+    meses = [f"2025-{m:02d}" for m in (11, 12)] + [f"2026-{m:02d}" for m in range(1, 11)]
+    return [{"mes": mes, "total": com_valor.get(mes, "0.00")} for mes in meses]
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +91,8 @@ def test_dashboard_exige_autenticacao(cliente_http, cabecalho_auth, capsys):
 def test_dashboard_sem_vendas(cliente_http, cabecalho):
     corpo = cliente_http.get("/api/web/dashboard", headers=cabecalho).get_json()
     assert corpo["resumo"] == {"total_vendas": 0, "faturamento_total": "0.00"}
-    assert corpo["faturamento_por_mes"] == []
+    # Os 12 meses aparecem mesmo sem vendas, zerados.
+    assert corpo["faturamento_por_mes"] == _meses_esperados({})
     assert corpo["top_produtos"] == []
     # Categorias do catálogo aparecem mesmo sem vendas, com total zero.
     assert {c["categoria"] for c in corpo["faturamento_por_categoria"]} == {c for _, c, _ in db.PRODUTOS_INICIAIS}
@@ -87,11 +104,9 @@ def test_dashboard_com_vendas(cliente_http, cabecalho, vendas):
     assert resposta.status_code == 200
     corpo = resposta.get_json()
     assert corpo["resumo"] == {"total_vendas": 6, "faturamento_total": "198.49"}
-    assert corpo["faturamento_por_mes"] == [
-        {"mes": "2026-08", "total": "55.80"},
-        {"mes": "2026-09", "total": "100.00"},
-        {"mes": "2026-10", "total": "42.69"},
-    ]
+    assert corpo["faturamento_por_mes"] == _meses_esperados(
+        {"2026-08": "55.80", "2026-09": "100.00", "2026-10": "42.69"}
+    )
     assert corpo["faturamento_por_categoria"] == [
         {"categoria": "Alimentos", "total": "140.80"},
         {"categoria": "Bebidas", "total": "29.70"},
@@ -120,13 +135,23 @@ def test_top_produtos_limita_a_cinco_e_desempata_pelo_nome(cliente_http, cabecal
     ]
 
 
-def test_faturamento_por_mes_mostra_os_ultimos_doze_meses(cliente_http, cabecalho):
-    for mes in range(1, 13):
-        _inserir_venda("Sabonete", 1, "2.50", f"2025-{mes:02d}-10")
-    _inserir_venda("Sabonete", 1, "2.50", "2026-01-10")
-    meses = [m["mes"] for m in cliente_http.get("/api/web/dashboard", headers=cabecalho).get_json()["faturamento_por_mes"]]
-    assert len(meses) == db.MESES_DASHBOARD
-    assert meses[0] == "2025-02" and meses[-1] == "2026-01"
+def test_faturamento_por_mes_usa_os_12_meses_de_calendario_ate_hoje(cliente_http, cabecalho):
+    _inserir_venda("Sabonete", 1, "2.50", "2025-10-31")  # um dia antes da janela: fica de fora
+    _inserir_venda("Sabonete", 2, "2.50", "2025-11-01")  # primeiro dia da janela
+    _inserir_venda("Sabonete", 4, "2.50", "2026-01-20")  # dezembro sem venda fica no meio, zerado
+    _inserir_venda("Sabonete", 3, "2.50", "2026-10-31")  # último dia da janela
+    corpo = cliente_http.get("/api/web/dashboard", headers=cabecalho).get_json()
+    assert corpo["faturamento_por_mes"] == _meses_esperados(
+        {"2025-11": "5.00", "2026-01": "10.00", "2026-10": "7.50"}
+    )
+    # O resumo cobre todo o período, inclusive a venda fora da janela do gráfico.
+    assert corpo["resumo"] == {"total_vendas": 4, "faturamento_total": "25.00"}
+
+
+def test_db_indicadores_respeita_a_data_de_referencia(vendas):
+    meses = db.indicadores_dashboard_web(date(2026, 9, 15), "req-ref")["faturamento_por_mes"]
+    assert [linha["mes"] for linha in meses][-1] == "2026-09" and len(meses) == db.MESES_DASHBOARD
+    assert {linha["mes"]: str(linha["total"]) for linha in meses}["2026-09"] == "100.00"
 
 
 def test_dashboard_reflete_criacao_edicao_e_exclusao(cliente_http, cabecalho):
@@ -174,7 +199,7 @@ def test_db_indicadores_erro_registra_log(monkeypatch, capsys):
 
     monkeypatch.setattr(db, "obter_conexao", conexao_quebrada)
     with pytest.raises(psycopg.OperationalError):
-        db.indicadores_dashboard_web("req-erro")
+        db.indicadores_dashboard_web(HOJE, "req-erro")
     evento = _eventos(capsys)[-1]
     assert (evento["layer"], evento["level"], evento["operation"], evento["request_id"]) == (
         "db",

@@ -314,6 +314,55 @@ curl -s -OJ "http://localhost:8080/api/web/records/export?categoria=Bebidas&data
 
 Cada exportação registra uma linha na camada `api` e outra na camada `db`, com `client: "web"`, `operation: "exportar_vendas"` e o mesmo `request_id`. A `message` traz a quantidade de vendas e os nomes dos filtros usados (ex.: `4 vendas exportadas em vendas-20261113-104500.csv (categoria, data_inicio)`). Parâmetros inválidos geram `WARN` só na camada `api`, e falhas no banco geram `ERROR`.
 
+## #6 — Dashboard com 3 gráficos na Web
+
+### Usar pela Web
+
+Depois do login, o cartão **Dashboard** aparece logo abaixo das boas-vindas, com o total de vendas registradas, o faturamento total e os 3 gráficos. Os valores vêm do banco pela API sempre que a página é aberta ou recarregada, ao clicar em **Atualizar** e automaticamente depois de cadastrar, editar ou excluir uma venda. O horário da última atualização aparece ao lado do botão.
+
+Os gráficos são desenhados em HTML e CSS dentro do `index.html`, sem biblioteca externa. Passe o mouse sobre uma coluna do gráfico de meses para ver o valor exato.
+
+### Os 3 indicadores
+
+| Indicador | O que mede | Como é calculado |
+|---|---|---|
+| **Faturamento por mês** (colunas) | Quanto foi vendido, em reais, em cada mês | Soma de `venda.valor_total` agrupada pelo mês de `data_venda` (`date_trunc('month', ...)`). Mostra os **últimos 12 meses que têm vendas**, do mais antigo para o mais recente. Meses sem venda não aparecem |
+| **Faturamento por categoria** (barras) | Quanto cada categoria do catálogo representa nas vendas | Soma de `venda.valor_total` por `produto.categoria`, partindo da tabela `produto` com `LEFT JOIN` em `venda`: categorias sem venda aparecem com R$ 0,00. Ordenado do maior para o menor faturamento |
+| **Top 5 produtos** (barras) | Os produtos mais vendidos em volume | Soma de `venda.quantidade` por produto, ordenada da maior para a menor; empate desempatado pelo nome. Mostra no máximo 5 produtos; produtos sem venda não entram |
+
+O resumo acima dos gráficos traz `COUNT(*)` e `SUM(valor_total)` de todas as vendas. Todas as consultas rodam na mesma transação (`REPEATABLE READ`), então o resumo e os 3 gráficos sempre se referem às mesmas vendas, mesmo se outra sessão alterar dados no meio. As consultas são próprias do dashboard Web (`indicadores_dashboard_web` no `db.py`).
+
+### Endpoint desta issue
+
+Exige `Authorization: Bearer <token>`; sem token ou com token inválido responde `401`.
+
+| Método | Rota | Resposta |
+|---|---|---|
+| GET | `/api/web/dashboard` | `200` com `resumo`, `faturamento_por_mes`, `faturamento_por_categoria` e `top_produtos` |
+
+Valores em reais vêm como texto com 2 casas (`"1234.50"`), como no restante da API. Exemplo:
+
+```bash
+curl -s http://localhost:8080/api/web/dashboard -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "resumo": {"total_vendas": 6, "faturamento_total": "198.49"},
+  "faturamento_por_mes": [{"mes": "2026-09", "total": "100.00"}, {"mes": "2026-10", "total": "42.69"}],
+  "faturamento_por_categoria": [{"categoria": "Alimentos", "total": "140.80"}, {"categoria": "Bebidas", "total": "29.70"}],
+  "top_produtos": [{"produto_id": 2, "produto_nome": "Feijão 1 kg", "quantidade": 10}]
+}
+```
+
+### Logs
+
+Cada carregamento registra uma linha na camada `api` e outra na camada `db`, com `operation: "dashboard"`, `client: "web"` e o mesmo `request_id`. A mensagem traz só a quantidade de vendas consideradas. Falha no banco gera `ERROR` nas duas camadas.
+
+```bash
+docker compose logs api | grep '"operation": "dashboard"'
+```
+
 ## Logs
 
 Cada evento é uma linha JSON no stdout, com `timestamp`, `level`, `layer` (`api`/`db`), `client` (`web`/`cli`), `operation`, `status`, `request_id` e `message`. API e banco compartilham o mesmo `request_id` dentro de uma requisição (também devolvido no header `X-Request-ID`). A inicialização do banco usa `client: "sistema"` e `request_id: "inicializacao"`. Erros não previstos na API viram `500 {"erro": "Erro interno"}` com log `ERROR`.

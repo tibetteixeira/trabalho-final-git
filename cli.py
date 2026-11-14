@@ -54,8 +54,12 @@ def url_api():
 
 
 def token_do_ambiente():
-    """Token lido de TOKEN_CLI. Lança TokenAusente se a variável estiver vazia ou ausente."""
-    token = os.environ.get(VARIAVEL_TOKEN, "").strip()
+    """Token lido de TOKEN_CLI. Lança TokenAusente se a variável estiver vazia ou ausente.
+
+    Remove todo espaço e quebra de linha (das pontas e do meio), que o copiar/colar costuma trazer:
+    o token assinado nunca os contém, e no cabeçalho HTTP eles fariam a requisição ser recusada.
+    """
+    token = "".join(os.environ.get(VARIAVEL_TOKEN, "").split())
     if not token:
         raise TokenAusente
     return token
@@ -70,10 +74,12 @@ def requisitar(metodo, caminho, corpo=None, token=None):
         cabecalhos["Content-Type"] = "application/json"
     if token is not None:
         cabecalhos["Authorization"] = f"Bearer {token}"
-    requisicao = urllib.request.Request(f"{url_api()}/api/cli{caminho}", data=dados, headers=cabecalhos, method=metodo)
     try:
+        requisicao = urllib.request.Request(
+            f"{url_api()}/api/cli{caminho}", data=dados, headers=cabecalhos, method=metodo
+        )
         with urllib.request.urlopen(requisicao, timeout=TEMPO_LIMITE) as resposta:
-            return json.loads(resposta.read().decode("utf-8"))
+            conteudo = resposta.read()
     except urllib.error.HTTPError as erro:
         with erro:
             try:
@@ -81,8 +87,23 @@ def requisitar(metodo, caminho, corpo=None, token=None):
             except ValueError:
                 conteudo = None
         raise ErroDaApi(erro.code, conteudo) from None
-    except (urllib.error.URLError, OSError, ValueError) as erro:
+    except (urllib.error.URLError, OSError) as erro:
         raise ApiIndisponivel(str(erro)) from None
+    except ValueError:
+        # URL_API inválida ou cabeçalho recusado. Sem str(erro): a mensagem do Python repete o cabeçalho, com o token.
+        raise ApiIndisponivel("URL ou requisição inválida") from None
+    try:
+        return json.loads(conteudo.decode("utf-8"))
+    except ValueError:
+        raise ApiIndisponivel("a resposta não é JSON") from None
+
+
+def descrever_validade(segundos):
+    """Validade do token em texto: "8 horas", "1 hora" ou "90 minutos"."""
+    horas, resto = divmod(segundos, 3600)
+    if resto:
+        return f"{segundos // 60} minutos"
+    return f"{horas} hora" if horas == 1 else f"{horas} horas"
 
 
 def perguntar(texto):
@@ -105,7 +126,7 @@ def comando_login(argumentos):
     corpo = requisitar("POST", "/token", {"usuario": usuario, "senha": senha})
     print(corpo["token"])
     print(
-        f"Token emitido para {corpo['nome']} ({corpo['usuario']}), válido por 8 horas.\n"
+        f"Token emitido para {corpo['nome']} ({corpo['usuario']}), válido por {descrever_validade(corpo['validade_segundos'])}.\n"
         f"Defina a variável de ambiente para usar os comandos protegidos:\n"
         f"  export {VARIAVEL_TOKEN}=<token acima>",
         file=sys.stderr,

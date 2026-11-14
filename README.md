@@ -64,7 +64,7 @@ O token Web é assinado e expira em 8 horas; fica no `sessionStorage` e é envia
 | Método | Rota | Autenticação | Resposta |
 |---|---|---|---|
 | GET | `/api/web/health` | pública | `200 {"status":"ok"}` |
-| POST | `/api/web/login` | — | `200 {"token","usuario","nome"}`; `400` sem campos; `401` credenciais inválidas |
+| POST | `/api/web/login` | usuário e senha no corpo | `200 {"token","usuario","nome","validade_segundos"}`; `400` sem campos; `401` credenciais inválidas |
 | GET | `/api/web/sessao` | Bearer | `200 {"usuario","nome"}`; `401` sem token ou token inválido |
 
 Pelo terminal:
@@ -395,6 +395,8 @@ docker compose run --rm cli --help       # ajuda geral, com a lista de subcomand
 docker compose run --rm cli login --help # ajuda de um subcomando
 ```
 
+O `docker compose up --build` não reconstrói o serviço `cli` (ele está num perfil). Depois de atualizar o código, use `docker compose run --rm --build cli ...` uma vez, ou `docker compose build cli`.
+
 | Subcomando | Rota | Autenticação | O que faz |
 |---|---|---|---|
 | `saude` | `GET /api/cli/health` | pública | Verifica se a API está no ar |
@@ -420,13 +422,15 @@ Códigos de saída: `0` sucesso, `1` erro da API ou API fora do ar, `2` uso inco
    docker compose run --rm cli sessao   # Autenticado como Administrador (admin)
    ```
 
-   Ou, num passo só (sem TTY, a senha vem de `SENHA_CLI`):
+   Ou, num passo só (sem TTY, a senha vem de `SENHA_CLI`). Passe `-e SENHA_CLI` **sem valor**, para o Compose copiar a variável do seu terminal: assim a senha não fica no histórico do shell nem na linha de comando:
 
    ```bash
-   export TOKEN_CLI=$(docker compose run --rm -T -e SENHA_CLI=admin123 cli login --usuario admin)
+   read -rs SENHA_CLI && export SENHA_CLI   # digita a senha sem eco
+   export TOKEN_CLI=$(docker compose run --rm -T -e SENHA_CLI cli login --usuario admin)
+   unset SENHA_CLI
    ```
 
-Os comandos protegidos enviam `Authorization: Bearer <TOKEN_CLI>`. Sem `TOKEN_CLI`, a CLI avisa e nem chama a API; com token inválido ou expirado, a API responde **HTTP 401** e a CLI pede um novo `login`. O token da CLI usa um salt próprio: token da Web não vale na CLI, e vice-versa.
+Os comandos protegidos enviam `Authorization: Bearer <TOKEN_CLI>`. Espaços e quebras de linha que o copiar/colar trouxer para o `TOKEN_CLI` são ignorados. Sem `TOKEN_CLI`, a CLI avisa e nem chama a API; com token inválido ou expirado, a API responde **HTTP 401** e a CLI pede um novo `login`. O token da CLI usa um salt próprio: token da Web não vale na CLI, e vice-versa.
 
 Para usar a CLI contra outra API, defina `URL_API` (padrão `http://api:8000`, o serviço do Compose).
 
@@ -435,8 +439,8 @@ Para usar a CLI contra outra API, defina `URL_API` (padrão `http://api:8000`, o
 | Método | Rota | Autenticação | Resposta |
 |---|---|---|---|
 | GET | `/api/cli/health` | pública | `200 {"status":"ok"}` |
-| POST | `/api/cli/token` | — | `200 {"token","usuario","nome"}`; `400` sem usuário ou senha; `401` credenciais inválidas; `500` falha no banco |
-| GET | `/api/cli/sessao` | Bearer | `200 {"usuario","nome"}`; `401` sem token, token inválido ou expirado |
+| POST | `/api/cli/token` | usuário e senha no corpo | `200 {"token","usuario","nome","validade_segundos"}`; `400` sem usuário ou senha; `401` credenciais inválidas; `500` falha no banco |
+| GET | `/api/cli/sessao` | Bearer (token da CLI) | `200 {"usuario","nome"}`; `401` sem token, token inválido, expirado ou emitido pela Web (`/api/web/login`) |
 
 ### Logs
 

@@ -46,6 +46,7 @@ def test_cli_token_emitido_correlaciona_logs_sem_expor_segredos(cliente_http, ca
     assert resposta.status_code == 200
     corpo = resposta.get_json()
     assert corpo["usuario"] == USUARIO_TESTE and corpo["nome"] == NOME_TESTE and corpo["token"]
+    assert corpo["validade_segundos"] == api.VALIDADE_TOKEN_CLI
 
     eventos = _eventos(capsys)
     request_id = resposta.headers["X-Request-ID"]
@@ -143,6 +144,11 @@ def test_cli_sessao_token_expirado_retorna_401(cliente_http, monkeypatch):
     assert resposta.status_code == 401
 
 
+def test_login_da_web_informa_a_validade_do_token(cliente_http):
+    resposta = cliente_http.post("/api/web/login", json={"usuario": USUARIO_TESTE, "senha": SENHA_TESTE})
+    assert resposta.get_json()["validade_segundos"] == api.VALIDADE_TOKEN_WEB
+
+
 def test_token_da_web_nao_vale_na_cli_e_vice_versa(cliente_http, token):
     assert cliente_http.get("/api/cli/sessao", headers={"Authorization": f"Bearer {token}"}).status_code == 401
     token_cli = _token_cli(cliente_http)
@@ -220,6 +226,7 @@ def test_login_imprime_so_o_token_no_stdout(servidor_api, capsys, monkeypatch):
     assert api.serializador_cli().loads(token)["usuario"] == USUARIO_TESTE
     assert capturado.err.startswith("Usuário: ")
     assert "export TOKEN_CLI=" in capturado.err and NOME_TESTE in capturado.err
+    assert "válido por 8 horas" in capturado.err
     assert token not in capturado.err
 
 
@@ -242,7 +249,8 @@ def test_login_senha_errada_sai_com_codigo_3(servidor_api, capsys, monkeypatch):
 
 def test_sessao_envia_bearer_do_ambiente(servidor_api, capsys, monkeypatch):
     token = _token_pela_cli(capsys, monkeypatch)
-    monkeypatch.setenv("TOKEN_CLI", f"  {token}\n")  # espaços e quebra de linha do copiar/colar
+    # espaços e quebras de linha do copiar/colar, nas pontas e no meio (terminal que quebra a linha longa)
+    monkeypatch.setenv("TOKEN_CLI", f"  {token[:30]}\n{token[30:60]}\r\n {token[60:]}\n")
     assert cli.main(["sessao"]) == 0
     saida = capsys.readouterr().out
     assert f"Autenticado como {NOME_TESTE} ({USUARIO_TESTE})" in saida
@@ -281,6 +289,46 @@ def test_erro_da_api_sem_json_mostra_o_status(monkeypatch, capsys):
     monkeypatch.setattr(cli.urllib.request, "urlopen", responder_502)
     assert cli.main(["saude"]) == cli.SAIDA_ERRO
     assert "Erro: HTTP 502 (HTTP 502)" in capsys.readouterr().err
+
+
+def test_url_api_invalida_nao_expoe_o_token(monkeypatch, capsys):
+    monkeypatch.setenv("URL_API", "sem-esquema")
+    monkeypatch.setenv("TOKEN_CLI", "token-secreto")
+    assert cli.main(["sessao"]) == cli.SAIDA_ERRO
+    erro = capsys.readouterr().err
+    assert "não foi possível conectar à API em sem-esquema (URL ou requisição inválida)" in erro
+    assert "token-secreto" not in erro
+
+
+def test_cabecalho_recusado_nao_expoe_o_token(monkeypatch, capsys):
+    def recusar(requisicao, **_kwargs):
+        raise ValueError(f"Invalid header value {requisicao.get_header('Authorization')!r}")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", recusar)
+    with pytest.raises(cli.ApiIndisponivel) as erro:
+        cli.requisitar("GET", "/sessao", token="token-secreto")
+    assert "token-secreto" not in str(erro.value)
+
+
+def test_resposta_de_sucesso_sem_json(monkeypatch, capsys):
+    class RespostaHtml(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_a, **_k: RespostaHtml(b"<html>"))
+    assert cli.main(["saude"]) == cli.SAIDA_ERRO
+    assert "(a resposta não é JSON)" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("segundos", "texto"),
+    [(8 * 3600, "8 horas"), (3600, "1 hora"), (90 * 60, "90 minutos")],
+)
+def test_descrever_validade(segundos, texto):
+    assert cli.descrever_validade(segundos) == texto
 
 
 def test_api_fora_do_ar(monkeypatch, capsys):

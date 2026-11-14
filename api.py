@@ -122,8 +122,10 @@ def web_saude():
     return jsonify(status="ok"), 200
 
 
-def emitir_token(origem, operacao, serializador, mensagem_sucesso):
+def emitir_token(origem, operacao, serializador, validade, mensagem_sucesso):
     """Confere usuário e senha do corpo JSON e responde com um token assinado por `serializador`.
+
+    A resposta informa a validade do token em segundos (`validade_segundos`).
 
     Compartilhado pelo login da Web e pela emissão de token da CLI. Senha e token não vão para o log.
     """
@@ -149,12 +151,12 @@ def emitir_token(origem, operacao, serializador, mensagem_sucesso):
 
     token = serializador().dumps({"usuario": registro["usuario"], "nome": registro["nome"]})
     registrar_log("INFO", origem, operacao, "success", mensagem_sucesso)
-    return jsonify(token=token, usuario=registro["usuario"], nome=registro["nome"]), 200
+    return jsonify(token=token, usuario=registro["usuario"], nome=registro["nome"], validade_segundos=validade), 200
 
 
 @app.post("/api/web/login")
 def web_login():
-    return emitir_token("web", "login", serializador_web, "Login realizado")
+    return emitir_token("web", "login", serializador_web, VALIDADE_TOKEN_WEB, "Login realizado")
 
 
 @app.get("/api/web/sessao")
@@ -172,7 +174,7 @@ def cli_saude():
 
 @app.post("/api/cli/token")
 def cli_token():
-    return emitir_token("cli", "token", serializador_cli, "Token da CLI emitido")
+    return emitir_token("cli", "token", serializador_cli, VALIDADE_TOKEN_CLI, "Token da CLI emitido")
 
 
 @app.get("/api/cli/sessao")

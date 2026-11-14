@@ -45,6 +45,21 @@ services:
       api:
         condition: service_healthy
 
+  cli:
+    build:
+      context: .
+      target: producao
+    profiles: ["cli"]
+    entrypoint: ["python", "cli.py"]
+    command: ["--help"]
+    environment:
+      URL_API: http://api:8000
+      # Repassa o token do host (export TOKEN_CLI=...) sem gravá-lo em arquivo.
+      TOKEN_CLI: ${TOKEN_CLI:-}
+    depends_on:
+      api:
+        condition: service_healthy
+
   db-testes:
     image: postgres:16-alpine
     profiles: ["testes"]
@@ -69,7 +84,7 @@ services:
       URL_BANCO: postgresql://app:app@db-testes:5432/app_test
       CHAVE_SECRETA: chave-de-teste
     command: >
-      pytest -q --cov=api --cov=db --cov-report=term-missing --cov-fail-under=100
+      pytest -q --cov=api --cov=db --cov=cli --cov-report=term-missing --cov-fail-under=100
     depends_on:
       db-testes:
         condition: service_healthy

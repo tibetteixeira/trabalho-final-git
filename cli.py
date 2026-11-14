@@ -1,0 +1,178 @@
+"""CLI de vendas: acessa a API somente pelas rotas `/api/cli/*`, nunca o banco diretamente.
+
+Execução (via Docker Compose, sem instalar nada no host):
+
+    docker compose run --rm cli --help
+    docker compose run --rm cli saude
+    docker compose run --rm cli login --usuario admin
+    TOKEN_CLI=<token> docker compose run --rm cli sessao
+"""
+
+import argparse
+import getpass
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+URL_API_PADRAO = "http://api:8000"
+TEMPO_LIMITE = 10  # segundos
+VARIAVEL_TOKEN = "TOKEN_CLI"
+
+# Códigos de saída: 0 sucesso, 1 erro da API ou de conexão, 2 uso incorreto (argparse), 3 não autenticado.
+SAIDA_SUCESSO = 0
+SAIDA_ERRO = 1
+SAIDA_NAO_AUTENTICADO = 3
+
+
+class ErroDaApi(Exception):
+    """A API respondeu com erro (status HTTP >= 400)."""
+
+    def __init__(self, status, corpo):
+        super().__init__(status)
+        self.status = status
+        self.corpo = corpo
+
+    @property
+    def mensagem(self):
+        if isinstance(self.corpo, dict) and isinstance(self.corpo.get("erro"), str):
+            return self.corpo["erro"]
+        return f"HTTP {self.status}"
+
+
+class ApiIndisponivel(Exception):
+    """Não foi possível conectar à API."""
+
+
+class TokenAusente(Exception):
+    """O comando é protegido e TOKEN_CLI não foi informado."""
+
+
+def url_api():
+    return (os.environ.get("URL_API") or URL_API_PADRAO).rstrip("/")
+
+
+def token_do_ambiente():
+    """Token lido de TOKEN_CLI. Lança TokenAusente se a variável estiver vazia ou ausente."""
+    token = os.environ.get(VARIAVEL_TOKEN, "").strip()
+    if not token:
+        raise TokenAusente
+    return token
+
+
+def requisitar(metodo, caminho, corpo=None, token=None):
+    """Chama `/api/cli<caminho>` e retorna o JSON da resposta. Lança ErroDaApi ou ApiIndisponivel."""
+    cabecalhos = {"Accept": "application/json"}
+    dados = None
+    if corpo is not None:
+        dados = json.dumps(corpo).encode("utf-8")
+        cabecalhos["Content-Type"] = "application/json"
+    if token is not None:
+        cabecalhos["Authorization"] = f"Bearer {token}"
+    requisicao = urllib.request.Request(f"{url_api()}/api/cli{caminho}", data=dados, headers=cabecalhos, method=metodo)
+    try:
+        with urllib.request.urlopen(requisicao, timeout=TEMPO_LIMITE) as resposta:
+            return json.loads(resposta.read().decode("utf-8"))
+    except urllib.error.HTTPError as erro:
+        with erro:
+            try:
+                conteudo = json.loads(erro.read().decode("utf-8"))
+            except ValueError:
+                conteudo = None
+        raise ErroDaApi(erro.code, conteudo) from None
+    except (urllib.error.URLError, OSError, ValueError) as erro:
+        raise ApiIndisponivel(str(erro)) from None
+
+
+def perguntar(texto):
+    """Lê uma resposta do terminal com o prompt no stderr, para o stdout ter só o resultado."""
+    print(texto, end="", file=sys.stderr, flush=True)
+    return input()
+
+
+def comando_saude(_argumentos):
+    """Healthcheck público: GET /api/cli/health."""
+    corpo = requisitar("GET", "/health")
+    print(f"API OK ({corpo.get('status')}) em {url_api()}")
+    return SAIDA_SUCESSO
+
+
+def comando_login(argumentos):
+    """Obtém um token: POST /api/cli/token. Só o token vai para o stdout; o resto vai para o stderr."""
+    usuario = argumentos.usuario or perguntar("Usuário: ")
+    senha = os.environ.get("SENHA_CLI") or getpass.getpass("Senha: ")
+    corpo = requisitar("POST", "/token", {"usuario": usuario, "senha": senha})
+    print(corpo["token"])
+    print(
+        f"Token emitido para {corpo['nome']} ({corpo['usuario']}), válido por 8 horas.\n"
+        f"Defina a variável de ambiente para usar os comandos protegidos:\n"
+        f"  export {VARIAVEL_TOKEN}=<token acima>",
+        file=sys.stderr,
+    )
+    return SAIDA_SUCESSO
+
+
+def comando_sessao(_argumentos):
+    """Comando protegido: GET /api/cli/sessao com Authorization: Bearer <TOKEN_CLI>."""
+    corpo = requisitar("GET", "/sessao", token=token_do_ambiente())
+    print(f"Autenticado como {corpo['nome']} ({corpo['usuario']})")
+    return SAIDA_SUCESSO
+
+
+def _traduzir_ajuda(parser):
+    """Títulos e ajuda do -h em português (o argparse os escreve em inglês)."""
+    parser._optionals.title = "opções"
+    parser._positionals.title = "argumentos"
+    parser._actions[0].help = "mostra esta ajuda e sai"
+    return parser
+
+
+def criar_parser():
+    parser = argparse.ArgumentParser(
+        prog="cli.py",
+        description="CLI de vendas. Usa a API em URL_API (padrão: http://api:8000).",
+        epilog=f"Comandos protegidos leem o token da variável de ambiente {VARIAVEL_TOKEN} (obtenha com 'login').",
+    )
+    _traduzir_ajuda(parser)
+    subcomandos = parser.add_subparsers(title="comandos", dest="comando", metavar="<comando>", required=True)
+
+    saude = subcomandos.add_parser("saude", help="verifica se a API está no ar (público)")
+    _traduzir_ajuda(saude).set_defaults(funcao=comando_saude)
+
+    login = subcomandos.add_parser(
+        "login",
+        help="obtém um token de acesso",
+        description="Obtém um token de acesso. A senha é pedida no terminal (ou lida de SENHA_CLI).",
+    )
+    _traduzir_ajuda(login).add_argument("--usuario", help="usuário (se omitido, é perguntado)")
+    login.set_defaults(funcao=comando_login)
+
+    sessao = subcomandos.add_parser("sessao", help=f"mostra o usuário do token em {VARIAVEL_TOKEN} (protegido)")
+    _traduzir_ajuda(sessao).set_defaults(funcao=comando_sessao)
+
+    return parser
+
+
+def main(argv=None):
+    argumentos = criar_parser().parse_args(argv)
+    try:
+        return argumentos.funcao(argumentos)
+    except TokenAusente:
+        print(f"Erro: comando protegido. Obtenha um token com 'login' e defina {VARIAVEL_TOKEN}.", file=sys.stderr)
+        return SAIDA_NAO_AUTENTICADO
+    except ErroDaApi as erro:
+        print(f"Erro: {erro.mensagem} (HTTP {erro.status})", file=sys.stderr)
+        if erro.status == 401 and argumentos.comando != "login":
+            print(f"Token ausente, inválido ou expirado. Gere outro com 'login' e atualize {VARIAVEL_TOKEN}.", file=sys.stderr)
+        return SAIDA_NAO_AUTENTICADO if erro.status == 401 else SAIDA_ERRO
+    except ApiIndisponivel as erro:
+        print(f"Erro: não foi possível conectar à API em {url_api()} ({erro}).", file=sys.stderr)
+        return SAIDA_ERRO
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelado.", file=sys.stderr)
+        return SAIDA_ERRO
+
+
+if __name__ == "__main__":
+    sys.exit(main())
